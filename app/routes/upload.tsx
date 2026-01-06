@@ -159,18 +159,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       return jsonResponse({ success: false, message: "No file provided" }, 400);
     }
 
-    // Check file size limit (50MB)
-    const maxFileSize = 50 * 1024 * 1024; // 50MB
-    if (file.size > maxFileSize) {
-      return jsonResponse(
-        {
-          success: false,
-          message: `File size exceeds 50MB limit. Please use a smaller image.`,
-        },
-        400
-      );
-    }
-
     try {
       // Upload to R2
       const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
@@ -194,201 +182,79 @@ export async function action({ request, context }: Route.ActionArgs) {
         (existingFilesResult.results || []).map((f: any) => f.filename)
       );
 
-      // For large files, process more carefully to avoid memory issues
-      let optimizedBuffer: Uint8Array;
-      let contentType: string;
-
-      // Process image with @cf-wasm/photon: resize and optimize
-      const { PhotonImage, SamplingFilter, resize } =
-        await import("@cf-wasm/photon/workerd");
-
-      // Read file buffer in chunks if very large to reduce peak memory
+      // Upload original file to R2 (no resizing - Cloudflare Transformations will handle optimization)
       const fileBuffer = await file.arrayBuffer();
-      const inputBytes = new Uint8Array(fileBuffer);
+      const originalName = file.name;
+      let filename = originalName;
 
-      // Create PhotonImage instance
-      let inputImage: any = null;
-      let outputImage: any = null;
-
-      try {
-        inputImage = PhotonImage.new_from_byteslice(inputBytes);
-
-        // Clear input buffer reference immediately to free memory
-        inputBytes.fill(0);
-        // @ts-ignore - Force GC hint
-        if (globalThis.gc) globalThis.gc();
-
-        // Determine target size based on original dimensions and file size
-        const originalWidth = inputImage.get_width();
-        const originalHeight = inputImage.get_height();
-        const fileSizeMB = file.size / (1024 * 1024);
-
-        // Adaptive resizing based on file size and dimensions
-        let maxWidth = 1920;
-        let quality = 75;
-
-        // For very large files or images, resize more aggressively
-        if (fileSizeMB > 20 || originalWidth > 5000 || originalHeight > 5000) {
-          maxWidth = 1600;
-          quality = 70;
-        } else if (
-          fileSizeMB > 10 ||
-          originalWidth > 4000 ||
-          originalHeight > 4000
-        ) {
-          maxWidth = 1800;
-          quality = 72;
-        } else if (originalWidth > 3000 || originalHeight > 3000) {
-          maxWidth = 1920;
-          quality = 75;
-        }
-
-        const needsResize = originalWidth > maxWidth;
-
-        if (needsResize) {
-          const aspectRatio = originalHeight / originalWidth;
-          const newHeight = Math.round(maxWidth * aspectRatio);
-
-          // Use faster sampling for very large images to save memory
-          const filter =
-            originalWidth > 5000 || fileSizeMB > 20
-              ? SamplingFilter.Triangle
-              : SamplingFilter.Lanczos3;
-
-          outputImage = resize(inputImage, maxWidth, newHeight, filter);
-
-          // Free input image immediately after resize
-          inputImage.free();
-          inputImage = null;
-
-          // @ts-ignore - Force GC hint
-          if (globalThis.gc) globalThis.gc();
-        } else {
-          outputImage = inputImage;
-        }
-
-        // Convert to JPEG with optimized quality
-        optimizedBuffer = outputImage.get_bytes_jpeg(quality);
-        contentType = "image/jpeg";
-
-        // Free output image immediately
-        outputImage.free();
-        outputImage = null;
-
-        // @ts-ignore - Force GC hint
-        if (globalThis.gc) globalThis.gc();
-
-        // Generate filename with .jpg extension (optimized format)
-        const originalName = file.name;
+      // Check if filename already exists, if so, add timestamp before extension
+      if (existingFilenames.has(filename)) {
         const lastDotIndex = originalName.lastIndexOf(".");
         const nameWithoutExt =
           lastDotIndex > 0
             ? originalName.substring(0, lastDotIndex)
             : originalName;
-        let filename = `${nameWithoutExt}.jpg`;
-
-        // Check if filename already exists, if so, add timestamp before extension
-        if (existingFilenames.has(filename)) {
-          const timestamp = Date.now();
-          filename = `${nameWithoutExt}-${timestamp}.jpg`;
-        }
-
-        // Add to set to prevent duplicates within the same upload batch
-        existingFilenames.add(filename);
-
-        // Upload to R2
-        await s3Client.send(
-          new PutObjectCommand({
-            Bucket: "aoya-pottery",
-            Key: filename,
-            Body: optimizedBuffer,
-            ContentType: contentType,
-            ACL: "public-read",
-          })
-        );
-
-        // Clear optimized buffer reference
-        const bufferSize = optimizedBuffer.length;
-
-        // Save metadata to D1
-        const url = `https://asset.aoya-pottery.com/${filename}`;
-
-        // Try to add display_order column if it doesn't exist
-        try {
-          await db
-            .prepare("ALTER TABLE files ADD COLUMN display_order INTEGER")
-            .run();
-        } catch (e) {
-          // Column might already exist, ignore error
-        }
-
-        // Get max display_order to set new item at the end
-        let newOrder = 1;
-        try {
-          const maxOrderResult = await db
-            .prepare("SELECT MAX(display_order) as max_order FROM files")
-            .first();
-          const maxOrder = (maxOrderResult as any)?.max_order;
-          if (maxOrder !== null && maxOrder !== undefined) {
-            newOrder = maxOrder + 1;
-          }
-        } catch (e) {
-          // If display_order doesn't exist yet, start from 1
-          newOrder = 1;
-        }
-
-        await db
-          .prepare(
-            "INSERT INTO files (id, filename, url, size, content_type, uploaded_at, display_order) VALUES (?, ?, ?, ?, ?, ?, ?)"
-          )
-          .bind(
-            crypto.randomUUID(),
-            filename,
-            url,
-            bufferSize,
-            contentType,
-            new Date().toISOString(),
-            newOrder
-          )
-          .run();
-
-        return jsonResponse({
-          success: true,
-          message: "File uploaded successfully",
-        });
-      } finally {
-        // Ensure memory is freed even if there's an error
-        if (inputImage) {
-          try {
-            inputImage.free();
-          } catch (e) {
-            // Ignore errors during cleanup
-          }
-        }
-        if (outputImage) {
-          try {
-            outputImage.free();
-          } catch (e) {
-            // Ignore errors during cleanup
-          }
-        }
+        const extension =
+          lastDotIndex > 0 ? originalName.substring(lastDotIndex) : "";
+        const timestamp = Date.now();
+        filename = `${nameWithoutExt}-${timestamp}${extension}`;
       }
+
+      // Add to set to prevent duplicates within the same upload batch
+      existingFilenames.add(filename);
+
+      // Upload original file to R2
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: "aoya-pottery",
+          Key: filename,
+          Body: fileBuffer,
+          ContentType: file.type || "image/jpeg",
+          ACL: "public-read",
+        })
+      );
+
+      // Save metadata to D1 with original URL (Cloudflare Transformations will be applied when displaying)
+      const url = `https://asset.aoya-pottery.com/${filename}`;
+
+      // Get max display_order to set new item at the end
+      let newOrder = 1;
+      try {
+        const maxOrderResult = await db
+          .prepare("SELECT MAX(display_order) as max_order FROM files")
+          .first();
+        const maxOrder = (maxOrderResult as any)?.max_order;
+        if (maxOrder !== null && maxOrder !== undefined) {
+          newOrder = maxOrder + 1;
+        }
+      } catch (e) {
+        // If display_order doesn't exist yet, start from 1
+        newOrder = 1;
+      }
+
+      await db
+        .prepare(
+          "INSERT INTO files (id, filename, url, size, content_type, uploaded_at, display_order) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(
+          crypto.randomUUID(),
+          filename,
+          url,
+          file.size,
+          file.type || "image/jpeg",
+          new Date().toISOString(),
+          newOrder
+        )
+        .run();
+
+      return jsonResponse({
+        success: true,
+        message: "File uploaded successfully",
+      });
     } catch (error) {
       console.error("Error uploading files:", error);
       const errorMessage =
         error instanceof Error ? error.message : "Failed to upload file";
-
-      // Check if it's a memory error
-      if (errorMessage.includes("memory") || errorMessage.includes("Memory")) {
-        return jsonResponse(
-          {
-            success: false,
-            message:
-              "File is too large or complex. Please try reducing the image dimensions or use a smaller file.",
-          },
-          413
-        );
-      }
 
       return jsonResponse(
         {
@@ -408,6 +274,27 @@ type UploadStatus = {
   status: "pending" | "uploading" | "success" | "error";
   message?: string;
 };
+
+// Helper function to convert image URL to Cloudflare Transformations URL
+function getTransformedImageUrl(
+  originalUrl: string,
+  options: {
+    width?: number;
+    quality?: number;
+    format?: string;
+  } = {}
+): string {
+  const { width = 400, quality = 85, format = "auto" } = options;
+
+  // If URL is already a Cloudflare Transformations URL, return as is
+  if (originalUrl.includes("/cdn-cgi/image/")) {
+    return originalUrl;
+  }
+
+  // Convert asset.aoya-pottery.com URL to Cloudflare Transformations URL
+  const transformationOptions = `width=${width},quality=${quality},format=${format}`;
+  return `https://aoya-pottery.com/cdn-cgi/image/${transformationOptions}/${originalUrl}`;
+}
 
 export default function Upload({
   loaderData,
@@ -810,7 +697,11 @@ export default function Upload({
                       #{index + 1}
                     </div>
                     <img
-                      src={file.url}
+                      src={getTransformedImageUrl(file.url, {
+                        width: 400,
+                        quality: 85,
+                        format: "auto",
+                      })}
                       alt={file.filename}
                       className="w-full h-full object-contain"
                       onError={(e) => {

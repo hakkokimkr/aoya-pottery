@@ -46,6 +46,28 @@ export async function loader({ context }: Route.LoaderArgs) {
   }
 }
 
+// Helper function to convert image URL to Cloudflare Transformations URL
+function getTransformedImageUrl(
+  originalUrl: string,
+  options: {
+    width?: number;
+    quality?: number;
+    format?: string;
+  } = {}
+): string {
+  const { width = 1920, quality = 85, format = "auto" } = options;
+
+  // If URL is already a Cloudflare Transformations URL, return as is
+  if (originalUrl.includes("/cdn-cgi/image/")) {
+    return originalUrl;
+  }
+
+  // Convert asset.aoya-pottery.com URL to Cloudflare Transformations URL
+  // Format: https://aoya-pottery.com/cdn-cgi/image/{options}/{source_url}
+  const transformationOptions = `width=${width},quality=${quality},format=${format}`;
+  return `https://aoya-pottery.com/cdn-cgi/image/${transformationOptions}/${originalUrl}`;
+}
+
 export default function Home({ loaderData }: Route.ComponentProps) {
   const { images } = loaderData;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -345,17 +367,26 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         <section className="gallery-section">
           <div ref={galleryRef} className="gallery">
             {images.length > 0 ? (
-              images.map((image: any, index: number) => (
-                <div key={image.id} className="gallery-item">
-                  <div className="image-wrapper">
-                    <img
-                      src={image.url}
-                      alt={`Aoya Pottery ${index + 1}`}
-                      loading={index < 4 ? "eager" : "lazy"}
-                    />
+              images.map((image: any, index: number) => {
+                // Use Cloudflare Transformations for image optimization
+                const transformedUrl = getTransformedImageUrl(image.url, {
+                  width: 1920,
+                  quality: 85,
+                  format: "auto",
+                });
+
+                return (
+                  <div key={image.id} className="gallery-item">
+                    <div className="image-wrapper">
+                      <img
+                        src={transformedUrl}
+                        alt={`Aoya Pottery ${index + 1}`}
+                        loading={index < 4 ? "eager" : "lazy"}
+                      />
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             ) : (
               <div className="gallery-item empty">
                 <p>이미지를 업로드해주세요</p>
