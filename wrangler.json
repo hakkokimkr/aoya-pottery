@@ -1,19 +1,28 @@
 {
-	"$schema": "./node_modules/wrangler/config-schema.json",
-	"name": "aoya-pottery",
-	"main": "./workers/app.ts",
-	"compatibility_date": "2025-10-08",
-	"compatibility_flags": ["nodejs_compat"],
-	"observability": {
-		"enabled": true
-	},
-	"upload_source_maps": true,
-	"vars": {
-		"VALUE_FROM_CLOUDFLARE": "Hello from Cloudflare"
-	},
-	"route": {
-        "pattern": "aoya-pottery.com",
-        "zone_name": "aoya-pottery.com",
-        "custom_domain": true
-      }
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "aoya-pottery",
+  "main": "./workers/app.ts",
+  "account_id": "f668dfa8580d3ffda32d5ca87213d141",
+  "compatibility_date": "2025-10-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true,
+  "vars": {
+    "S3_ACCESS_KEY_ID": "b254678e6a55aa879730ec0f328bba52",
+    "S3_SECRET_ACCESS_KEY": "8a1be0373ad9f3729233fb214c60b09eef48eff062b32803c01f1c0f5c9ae470"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "aoya-pottery-db",
+      "database_id": "035e7902-68c3-4823-8ba9-4d836321c384"
+    }
+  ],
+  "route": {
+    "pattern": "aoya-pottery.com",
+    "zone_name": "aoya-pottery.com",
+    "custom_domain": true
+  }
 }
