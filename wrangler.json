@@ -10,5 +10,10 @@
 	"upload_source_maps": true,
 	"vars": {
 		"VALUE_FROM_CLOUDFLARE": "Hello from Cloudflare"
-	}
+	},
+	"route": {
+        "pattern": "aoya-pottery.com",
+        "zone_name": "aoya-pottery.com",
+        "custom_domain": true
+      }
 }
