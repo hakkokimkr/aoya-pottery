@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Simple pottery bowl - optimized for small sizes -->
+  <defs>
+    <linearGradient id="potGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#9D7A5B;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#6B5438;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Main bowl shape -->
+  <path d="M 6 22 
+           Q 6 14 16 14 
+           Q 26 14 26 22 
+           Q 26 28 16 28 
+           Q 6 28 6 22 Z" 
+        fill="url(#potGrad)" 
+        stroke="#4A3425" 
+        stroke-width="1"/>
+  
+  <!-- Rim -->
+  <ellipse cx="16" cy="22" rx="10" ry="2" fill="#8B6F47"/>
+  
+  <!-- Inner depth -->
+  <ellipse cx="16" cy="24" rx="7" ry="3.5" fill="#4A3425" opacity="0.15"/>
+</svg>

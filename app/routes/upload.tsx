@@ -19,9 +19,10 @@ export async function loader({ context }: Route.LoaderArgs) {
   const db = context.cloudflare.env.DB;
 
   try {
+    // Try to get display_order, fallback to uploaded_at if column doesn't exist
     const result = await db
       .prepare(
-        "SELECT id, filename, url, size, uploaded_at FROM files ORDER BY uploaded_at DESC"
+        "SELECT id, filename, url, size, uploaded_at, COALESCE(display_order, 999999) as display_order FROM files ORDER BY display_order ASC, uploaded_at DESC"
       )
       .all();
 
@@ -29,10 +30,22 @@ export async function loader({ context }: Route.LoaderArgs) {
       files: result.results || [],
     };
   } catch (error) {
-    console.error("Error loading files:", error);
-    return {
-      files: [],
-    };
+    // If display_order column doesn't exist, use uploaded_at
+    try {
+      const result = await db
+        .prepare(
+          "SELECT id, filename, url, size, uploaded_at FROM files ORDER BY uploaded_at DESC"
+        )
+        .all();
+      return {
+        files: result.results || [],
+      };
+    } catch (e) {
+      console.error("Error loading files:", e);
+      return {
+        files: [],
+      };
+    }
   }
 }
 
@@ -50,6 +63,47 @@ export async function action({ request, context }: Route.ActionArgs) {
       headers: { "Content-Type": "application/json" },
     });
   };
+
+  if (intent === "reorder") {
+    const orderData = formData.get("order") as string;
+    if (!orderData) {
+      return jsonResponse(
+        { success: false, message: "No order data provided" },
+        400
+      );
+    }
+
+    try {
+      const order = JSON.parse(orderData) as Array<{ id: string; order: number }>;
+      const db = context.cloudflare.env.DB;
+
+      // Try to add display_order column if it doesn't exist
+      try {
+        await db.prepare("ALTER TABLE files ADD COLUMN display_order INTEGER").run();
+      } catch (e) {
+        // Column might already exist, ignore error
+      }
+
+      // Update display_order for each file
+      for (const item of order) {
+        await db
+          .prepare("UPDATE files SET display_order = ? WHERE id = ?")
+          .bind(item.order, item.id)
+          .run();
+      }
+
+      return jsonResponse({
+        success: true,
+        message: "Order updated successfully",
+      });
+    } catch (error) {
+      console.error("Error updating order:", error);
+      return jsonResponse(
+        { success: false, message: "Failed to update order" },
+        500
+      );
+    }
+  }
 
   if (intent === "delete") {
     const fileId = formData.get("id") as string;
@@ -193,9 +247,31 @@ export async function action({ request, context }: Route.ActionArgs) {
       // Save metadata to D1
       const url = `https://asset.aoya-pottery.com/${filename}`;
 
+      // Try to add display_order column if it doesn't exist
+      try {
+        await db.prepare("ALTER TABLE files ADD COLUMN display_order INTEGER").run();
+      } catch (e) {
+        // Column might already exist, ignore error
+      }
+
+      // Get max display_order to set new item at the end
+      let newOrder = 1;
+      try {
+        const maxOrderResult = await db
+          .prepare("SELECT MAX(display_order) as max_order FROM files")
+          .first();
+        const maxOrder = (maxOrderResult as any)?.max_order;
+        if (maxOrder !== null && maxOrder !== undefined) {
+          newOrder = maxOrder + 1;
+        }
+      } catch (e) {
+        // If display_order doesn't exist yet, start from 1
+        newOrder = 1;
+      }
+
       await db
         .prepare(
-          "INSERT INTO files (id, filename, url, size, content_type, uploaded_at) VALUES (?, ?, ?, ?, ?, ?)"
+          "INSERT INTO files (id, filename, url, size, content_type, uploaded_at, display_order) VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(
           crypto.randomUUID(),
@@ -203,7 +279,8 @@ export async function action({ request, context }: Route.ActionArgs) {
           url,
           optimizedBuffer.length,
           contentType,
-          new Date().toISOString()
+          new Date().toISOString(),
+          newOrder
         )
         .run();
 
@@ -244,8 +321,17 @@ export default function Upload({
     Map<number, UploadStatus>
   >(new Map());
   const [isDragging, setIsDragging] = useState(false);
+  const [orderedFiles, setOrderedFiles] = useState<any[]>(files);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
+  const submit = useSubmit();
+
+  // Update orderedFiles when files change
+  useEffect(() => {
+    setOrderedFiles(files);
+  }, [files]);
 
   const handleFiles = (fileList: FileList | null) => {
     if (fileList) {
@@ -261,24 +347,24 @@ export default function Upload({
     }
   };
 
-  const handleDragEnter = (e: React.DragEvent) => {
+  const handleDropZoneDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(true);
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
+  const handleDropZoneDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
   };
 
-  const handleDragLeave = (e: React.DragEvent) => {
+  const handleDropZoneDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDropZoneDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
@@ -291,6 +377,54 @@ export default function Upload({
 
   const removeFile = (index: number) => {
     setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // Drag and drop handlers for reordering
+  const handleDragStart = (index: number) => {
+    setDraggedIndex(index);
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    setDragOverIndex(index);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    setDragOverIndex(null);
+
+    if (draggedIndex === null || draggedIndex === dropIndex) {
+      setDraggedIndex(null);
+      return;
+    }
+
+    const newOrder = [...orderedFiles];
+    const [draggedItem] = newOrder.splice(draggedIndex, 1);
+    newOrder.splice(dropIndex, 0, draggedItem);
+
+    setOrderedFiles(newOrder);
+    setDraggedIndex(null);
+
+    // Save new order to database
+    const orderData = newOrder.map((file, index) => ({
+      id: file.id,
+      order: index + 1,
+    }));
+
+    const formData = new FormData();
+    formData.append("intent", "reorder");
+    formData.append("order", JSON.stringify(orderData));
+
+    submit(formData, { method: "post" });
+  };
+
+  const handleDragEnd = () => {
+    setDraggedIndex(null);
+    setDragOverIndex(null);
   };
 
   // Upload each file individually using fetchers
@@ -404,10 +538,10 @@ export default function Upload({
               {/* Drag and Drop Zone */}
               <div
                 ref={dropZoneRef}
-                onDragEnter={handleDragEnter}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
+                onDragEnter={handleDropZoneDragEnter}
+                onDragOver={handleDropZoneDragOver}
+                onDragLeave={handleDropZoneDragLeave}
+                onDrop={handleDropZoneDrop}
                 className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
                   isDragging
                     ? "border-blue-500 bg-blue-50"
@@ -546,17 +680,37 @@ export default function Upload({
 
         {/* Files List */}
         <div className="bg-white rounded-lg shadow-md p-6">
-          <h2 className="text-xl font-semibold mb-4">Uploaded Photos</h2>
-          {files.length === 0 ? (
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold">Uploaded Photos</h2>
+            <p className="text-sm text-gray-500">
+              드래그하여 순서를 변경할 수 있습니다
+            </p>
+          </div>
+          {orderedFiles.length === 0 ? (
             <p className="text-gray-500">No photos uploaded yet.</p>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {files.map((file: any) => (
+              {orderedFiles.map((file: any, index: number) => (
                 <div
                   key={file.id}
-                  className="border rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-shadow"
+                  draggable
+                  onDragStart={() => handleDragStart(index)}
+                  onDragOver={(e) => handleDragOver(e, index)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={(e) => handleDrop(e, index)}
+                  onDragEnd={handleDragEnd}
+                  className={`border rounded-lg overflow-hidden shadow-sm hover:shadow-md transition-all cursor-move ${
+                    draggedIndex === index
+                      ? "opacity-50 scale-95"
+                      : dragOverIndex === index
+                      ? "border-blue-500 border-2 scale-105"
+                      : ""
+                  }`}
                 >
                   <div className="aspect-square bg-gray-100 relative">
+                    <div className="absolute top-2 left-2 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded z-10">
+                      #{index + 1}
+                    </div>
                     <img
                       src={file.url}
                       alt={file.filename}

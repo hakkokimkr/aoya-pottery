@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS files (
   url TEXT NOT NULL,
   size INTEGER NOT NULL,
   content_type TEXT,
-  uploaded_at TEXT NOT NULL
+  uploaded_at TEXT NOT NULL,
+  display_order INTEGER
 );
 

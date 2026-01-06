@@ -17,6 +17,7 @@
 		"@aws-sdk/client-s3": "^3.962.0",
 		"@cf-wasm/photon": "^0.3.4",
 		"@squoosh/lib": "^0.3.1",
+		"gsap": "^3.14.2",
 		"isbot": "5.1.32",
 		"jimp": "^1.6.0",
 		"react": "^19.0.0",
